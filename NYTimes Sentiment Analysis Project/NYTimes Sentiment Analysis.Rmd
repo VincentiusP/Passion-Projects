@@ -1,0 +1,99 @@
+---
+title: "Untitled"
+author: "Vincentius Paparang"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+library(httr)
+library(rvest)
+library(tidytext)
+library(sentimentr)
+library(lexicon)
+library(magrittr)
+library(dplyr)
+library(readxl)
+library(forecast)
+```
+
+Extracting Data Using NYT API
+```{r}
+# This lets me take the article titles and date created of the 500 most recent busienss articles
+zipRequest <- GET("https://api.nytimes.com/svc/news/v3/content/nyt/business/limit=500.json?api-key=GOJFWCWuGRagcbtSHTn8VSigdA0QxfOH")
+zipText <- content(zipRequest, as = "text")
+read1 <- jsonlite::fromJSON(zipText, simplifyDataFrame = TRUE)
+title1 <-  read1$results$title
+created_date1 <- read1$results$created_date
+
+# This lets me take the article titles and date created of the next 500 articles. This is the cap as it seems I can only extract 500 at a time and only offset by 500 as well.
+zipRequest2 <- GET("https://api.nytimes.com/svc/news/v3/content/nyt/business/limit=500/offset=500.json?api-key=GOJFWCWuGRagcbtSHTn8VSigdA0QxfOH")
+zipText2 <- content(zipRequest2, as = "text")
+read2 <- jsonlite::fromJSON(zipText2, simplifyDataFrame = TRUE)
+title2 <- read2$results$title
+created_date2 <- read2$results$created_date
+
+# Combining the 2
+titles2023 <- c(title2, title1)
+created_date_2023 <- c(created_date2, created_date1)
+
+titles2023
+created_date_2023
+```
+
+Processing the data by removing punctuations as they do not hold sentiment value. Then running the sentiment analysis
+```{r}
+titles2023 <- lapply(titles2023, tolower)
+titles2023 <- gsub("[[:punct:]]", "", titles2023)
+
+# Removing extra characters so the data is in a proper date format
+created_date_2023 <- substr(created_date_2023, 1, 10)
+
+# Running the sentiment analysis using loughran_mcdonald
+article_title_sentiment <- sentiment(titles2023, 
+          polarity_dt = lexicon::hash_sentiment_loughran_mcdonald)
+
+# combining it all into a dataframe
+df <- data.frame(Article = titles2023, Title_Sentiment = article_title_sentiment$sentiment, Date = created_date_2023)
+
+# Taking the average sentiment per day as some days there are more than 1 articles produced.
+result <- df %>%
+  group_by(Date) %>%
+  summarize(mean_value = mean(Title_Sentiment))
+result
+```
+
+Reading in the S&P500 data. This is only used as a reference to compare with.
+```{r}
+# Cleaning up the data
+sp500 <- read_excel("SP500.xls", col_names = c("Date", "Observed"))
+sp500 <- sp500[12:86, ]
+
+# Adjusting to scale so it is more comparable to the sentiment data.
+sp500$Observed <- scale(as.numeric(sp500$Observed), center = mean(as.numeric(sp500$Observed)), scale = max(as.numeric(sp500$Observed)) - min(as.numeric(sp500$Observed)))
+
+# Date was in numeric so I had to convert it into a regular date time format
+sp500$Date <- as.Date(as.numeric(sp500$Date), origin = "1899-12-30", format = "%Y-%m-%d")
+sp500$Date <- as.character(sp500$Date)
+```
+
+Creating time series objects and seeing how accurate NYT is when it comes to overall financial performance.
+```{r}
+
+# Merging on data that is available. Some dates are empty and so this is done to connect the data properly.
+comparison <- merge(result, sp500, by = "Date")
+comparison
+
+# Creating time series
+sentiment_values <- ts(comparison$mean_value)
+actual_values <- ts(comparison$Observed)
+
+# Measuring performance
+accuracy(sentiment_values, actual_values)
+
+# Plotting the 2 time series
+plot(sentiment_values)
+lines(actual_values, col = "blue")
+```
+
+
