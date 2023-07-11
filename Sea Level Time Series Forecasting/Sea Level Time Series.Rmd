@@ -1,0 +1,310 @@
+---
+title: "Sea Level Time Series Prediction"
+author: "Issac Chan, Vincent Paparang, Mikheil Parunovi, Denniz Zhang"
+date: "2023-02-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Loading Packages
+```{r Loading Packages, message=FALSE}
+library(forecast)
+library(zoo)
+library(dplyr)
+library(neuralnet)
+```
+
+Read in and clean Data
+```{r}
+global_sea_level <- read.csv("Team9.csv")
+head(global_sea_level, 10)
+clean_global_sea_level_1 <- global_sea_level[-1:-4, ]
+colnames(clean_global_sea_level_1) <- c("Year", "TOPEX_Poseidon", "Jason_1", "Jason_2", "Jason_3")
+clean_global_sea_level_1 <- clean_global_sea_level_1[-1, ]
+
+clean_global_sea_level_1$Year <- as.numeric(clean_global_sea_level_1$Year)
+clean_global_sea_level_1$Jason_3 <- as.numeric(clean_global_sea_level_1$Jason_3)
+clean_global_sea_level_1$Jason_2 <- as.numeric(clean_global_sea_level_1$Jason_2)
+clean_global_sea_level_1$Jason_1 <- as.numeric(clean_global_sea_level_1$Jason_1)
+clean_global_sea_level_1$TOPEX_Poseidon <- as.numeric(clean_global_sea_level_1$TOPEX_Poseidon)
+
+for (i in 1:nrow(clean_global_sea_level_1)){
+  if (!is.na(clean_global_sea_level_1$Jason_3[i])){
+    clean_global_sea_level_1$sea_level[i] <- clean_global_sea_level_1$Jason_3[i]
+  } else if (!is.na(clean_global_sea_level_1$Jason_2[i])) {
+    clean_global_sea_level_1$sea_level[i] <- clean_global_sea_level_1$Jason_2[i]
+  } else if (!is.na(clean_global_sea_level_1$Jason_1[i])) {
+    clean_global_sea_level_1$sea_level[i] <- clean_global_sea_level_1$Jason_1[i]
+  } else if (!is.na(clean_global_sea_level_1$TOPEX_Poseidon[i])){
+    clean_global_sea_level_1$sea_level[i] <- clean_global_sea_level_1$TOPEX_Poseidon[i]
+  }
+}
+
+original_series <- clean_global_sea_level_1[, -which(names(clean_global_sea_level_1) %in% c("TOPEX_Poseidon", "Jason_1", "Jason_2", "Jason_3"))]
+
+original.ts <- ts(original_series$sea_level, start = c(1993, 1), end = c(2022, 4), frequency = 36)
+
+for (i in 1:nrow(clean_global_sea_level_1)){
+  if(clean_global_sea_level_1$Year[i]%%1 <= 0.25){
+    clean_global_sea_level_1$Quarter[i] <- paste0(floor(clean_global_sea_level_1$Year[i]), "Q1")
+  } else if ((0.25 < clean_global_sea_level_1$Year[i]%%1) & (clean_global_sea_level_1$Year[i]%%1 <= 0.5)){
+    clean_global_sea_level_1$Quarter[i] <- paste0(floor(clean_global_sea_level_1$Year[i]), "Q2")
+  } else if ((0.5 < clean_global_sea_level_1$Year[i]%%1) & (clean_global_sea_level_1$Year[i]%%1 <= 0.75)){
+    clean_global_sea_level_1$Quarter[i] <- paste0(floor(clean_global_sea_level_1$Year[i]), "Q3")
+  } else if (0.75 < clean_global_sea_level_1$Year[i]%%1){
+    clean_global_sea_level_1$Quarter[i] <- paste0(floor(clean_global_sea_level_1$Year[i]), "Q4")
+  }
+}
+
+final_data <- data.frame(Quarter = clean_global_sea_level_1$Quarter, sea_level = clean_global_sea_level_1$sea_level)
+
+final_quarterly_data <- final_data %>%
+  group_by(Quarter) %>%
+  summarise(avg = mean(sea_level)) %>%
+  arrange(Quarter)
+
+head(final_quarterly_data, 10)
+```
+
+
+Create time series model and visualize
+```{r Original Data}
+sea.ts <- ts(final_quarterly_data$avg, start = c(1993, 1), end = c(2022, 4), frequency = 4)
+
+plot(original.ts, xlab = "Year", ylab = "Sea Level", main = "Sea Level Change - Original Series")
+
+plot(sea.ts, xlab = "Year", ylab = "Sea Level", main = "Sea Level Change - Quarterly Series")
+```
+
+
+Detect if the data is a random walk with Acf, as well as check for the presence of seasonality in the series.
+```{r Acf}
+Acf(sea.ts)
+Acf(diff(sea.ts))
+```
+
+
+Data Partition
+```{r Data Partition}
+nValid <- 16
+nTrain <- length(sea.ts) - nValid
+train.ts <- window(sea.ts, start = c(1993, 1), end = c(1993, nTrain))
+valid.ts <- window(sea.ts, start = c(1993, nTrain + 1), end = c(1993, nTrain + nValid))
+```
+
+
+Linear Regression
+```{r Linear}
+linear.mod <- tslm(train.ts ~ trend)
+summary(linear.mod)
+```
+
+
+Linear Regression with Season
+```{r linear.season}
+linear.season.mod <- tslm(train.ts ~ trend + season)
+summary(linear.season.mod)
+```
+
+
+Linear Regression with Polynomial Trend and season
+```{r Poly.season}
+poly.season.mod <- tslm(train.ts ~ trend + I(trend^2) + season)
+summary(poly.season.mod)
+```
+
+
+Holt-Winter Method
+```{r Hwin}
+hwin.mod <- ets(train.ts)
+summary(hwin.mod)     # ETS (A,A,A) as suggested by the model
+```
+
+
+ARIMA Model
+```{r ARIMA}
+arima.mod <- auto.arima(train.ts)
+summary(arima.mod)    # ARIMA(1,0,0)(2,1,0)[4] with drift as suggested by the model
+```
+
+
+Neural Network Model
+```{r NN}
+set.seed(13)
+nn.mod <- nnetar(train.ts, P = 4, lambda = 1)
+summary(nn.mod)
+```
+
+
+Tbats Model
+```{r}
+tbats.mod <- tbats(train.ts)
+summary(tbats.mod)
+```
+
+
+Forecast Outcome
+```{r Forecasting}
+naive.mod.pred <- naive(train.ts, h = nValid, level = 0)
+snaive.mod.pred <- snaive(train.ts, h = nValid, level = 0)
+linear.mod.pred <- forecast(linear.mod, h = nValid, level = 0)
+linear.season.mod.pred <- forecast(linear.season.mod, h = nValid, level = 0)
+poly.season.mod.pred <- forecast(poly.season.mod, h = nValid, level = 0)
+hwin.mod.pred <- forecast(hwin.mod, h = nValid, level = 0)
+arima.mod.pred <- forecast(arima.mod, h = nValid, level = 0)
+nn.mod.pred <- forecast(nn.mod, h = nValid, level = 0)
+tbats.mod.pred <- forecast(tbats.mod, h = nValid, level = 0)
+```
+
+
+Accuracy for different models
+```{r Accuracy, results='hide'}
+accuracy(linear.mod.pred$mean, valid.ts)
+accuracy(linear.season.mod.pred$mean, valid.ts)
+accuracy(naive.mod.pred$mean, valid.ts)
+accuracy(snaive.mod.pred$mean, valid.ts)
+accuracy(poly.season.mod.pred$mean, valid.ts)
+accuracy(hwin.mod.pred$mean, valid.ts)
+accuracy(arima.mod.pred$mean, valid.ts)
+accuracy(nn.mod.pred$mean, valid.ts)
+accuracy(tbats.mod.pred$mean, valid.ts)
+```
+
+
+```{r Accuracy Table}
+result_table <- rbind.data.frame(accuracy(linear.mod.pred$mean, valid.ts),
+                                   accuracy(linear.season.mod.pred$mean, valid.ts),
+                                   accuracy(naive.mod.pred$mean, valid.ts),
+                                   accuracy(snaive.mod.pred$mean, valid.ts),
+                                   accuracy(poly.season.mod.pred$mean, valid.ts),
+                                   accuracy(hwin.mod.pred$mean, valid.ts),
+                                   accuracy(arima.mod.pred$mean, valid.ts),
+                                   accuracy(nn.mod.pred$mean, valid.ts),
+                                   accuracy(tbats.mod.pred$mean, valid.ts))
+
+rownames(result_table) <- c("linear.mod.pred",
+                            "linear.season.mod.pred",
+                            "naive.mod.pred",
+                            "snaive.mod.pred",
+                            "poly.season.mod.pred",
+                            "hwin.mod.pred",
+                            "arima.mod.pred",
+                            "nn.mod.pred",
+                            "tbats.mod.pred")
+
+result_table
+```
+
+
+Plot for naive, seasonal naive and linear regression model
+```{r}
+plot(linear.mod.pred, include = 30, ylim = c(20,90), lwd = 2)
+lines(naive.mod.pred$mean, col = "yellow", lwd = 2)
+lines(snaive.mod.pred$mean, col = "orange", lwd = 2)
+lines(valid.ts, col = "black", lwd = 2)
+legend("topleft", legend = c("Linear Model", "Naive","Seasonal Naive", "Validation Data"), 
+       col = c("skyblue", "yellow","orange", "black"), lty = 1, cex = 1)
+```
+
+Plot for linear regression with season and polynomial trend with season model
+```{r}
+plot(linear.season.mod.pred, include = 30, ylim = c(20,90), lwd = 2, col = "black", fcol = "red")
+lines(poly.season.mod.pred$mean, col = "green", lwd = 2)
+lines(valid.ts, col = "black", lwd = 2)
+legend("topleft", legend = c("LR with season", "LR with Poly-Trend and Season", "Validation Data"), 
+       col = c("red", "green", "black"), lty = 1, cex = 1)
+```
+
+Plot for Holt-Winter model
+```{r}
+plot(hwin.mod.pred, include = 30, ylim = c(20,90), lwd = 2, col = "black", fcol = "blue")
+lines(valid.ts, col = "black", lwd = 2)
+legend("topleft", legend = c("Holt-Winter", "Validation Data"), 
+       col = c("blue", "black"), lty = 1, cex = 1)
+```
+
+Plot for ARIMA model
+```{r}
+plot(arima.mod.pred, include = 30, ylim = c(20,90), lwd = 2, col = "black", fcol = "pink")
+lines(valid.ts, col = "black", lwd = 2)
+legend("topleft", legend = c("ARIMA", "Validation Data"), 
+       col = c("pink", "black"), lty = 1, cex = 1)
+```
+
+Plot for Neural Network model and 
+```{r}
+plot(nn.mod.pred, include = 30, ylim = c(20,90), lwd = 2, col = "black", fcol = "purple")
+lines(tbats.mod.pred$mean, col = "brown", lwd = 2)
+lines(valid.ts, col = "black", lwd = 2)
+legend("topleft", legend = c("Neural Network", "TBATS", "Validation Data"), 
+       col = c("purple", "brown", "black"), lty = 1, cex = 1)
+```
+
+
+Final plot for all predictions
+```{r Plotting}
+plot(linear.mod.pred, include = 30, ylim = c(20,90), lwd = 2)
+lines(naive.mod.pred$mean, col = "yellow", lwd = 2)
+lines(snaive.mod.pred$mean, col = "orange", lwd = 2)
+lines(linear.season.mod.pred$mean, col = "red", lwd = 2)
+lines(poly.season.mod.pred$mean, col = "green", lwd = 2)
+lines(hwin.mod.pred$mean, col = "blue", lwd = 2)
+lines(arima.mod.pred$mean, col = "pink", lwd = 2)
+lines(nn.mod.pred$mean, col = "purple", lwd = 2)
+lines(tbats.mod.pred$mean, col = "brown", lwd = 2)
+lines(valid.ts, col = "black", lwd = 2)
+legend("topleft", legend = c("Linear Model", "Seasonal Naive", "LR with season", "LR with Poly-Trend and Season", "Holt-Winter", "ARIMA", "Neural Network", "TBATS", "Validation Data"), 
+       col = c("lightblue", "orange", "red", "green", "blue", "pink", "purple", "brown", "black"), lty = 1, cex = 0.7)
+```
+
+
+Future Prediction - Linear Regression with Polynomial Trend
+```{r Future Forecasting 1}
+full.poly.season.mod <- tslm(sea.ts ~ trend + I(trend^2) + season)
+full.poly.season.mod.pred <- forecast(full.poly.season.mod, h = 20, level = 0)
+
+plot(full.poly.season.mod.pred, include = 30, lwd = 2, col = "black", fcol = "green", main = "Forecast: Linear Regression with Polynomial Trend and Seasonality")
+legend("topleft", legend = c("Prediction of Linear Model", "Historical Data"), col = c("green", "black"), lty = 1, cex = 0.8)
+
+full.poly.season.mod.pred
+```
+
+Future Prediction - ARIMA
+```{r Future Forecasting 2}
+full.arima.mod <- Arima(sea.ts, order = c(1, 0, 0), seasonal = c(2, 1, 0))
+full.arima.mod.pred <- forecast(full.arima.mod, h = 20, level = 0)
+
+plot(full.arima.mod.pred, include = 30, lwd = 2, col = "black", fcol = "pink", main = "Forecast: ARIMA (1, 0, 0)(2, 1, 0)")
+legend("topleft", legend = c("Prediction of ARIMA Model", "Historical Data"), col = c("pink", "black"), lty = 1, cex = 0.8)
+
+full.arima.mod.pred
+```
+
+Future Prediction - Holt-Winter
+```{r Future Forecasting 3}
+full.hwin.mod <- ets(sea.ts, model = "AAA")
+full.hwin.mod.pred <- forecast(full.hwin.mod, h = 20, level = 0)
+
+plot(full.hwin.mod.pred, include = 30, lwd = 2, col = "black", fcol = "blue", main = "Forecast: Holt-Winter Smoothing Model")
+legend("topleft", legend = c("Prediction of Holt-Winter Model", "Historical Data"), col = c("blue", "black"), lty = 1, cex = 0.8)
+
+full.hwin.mod.pred
+```
+
+```{r}
+Acf(full.poly.season.mod.pred$residuals)
+Acf(full.arima.mod.pred$residuals)
+Acf(full.hwin.mod.pred$residuals)
+```
+
+```{r Top 3 Future Prediction}
+plot(full.poly.season.mod.pred, include = 30, lwd = 2, col = "black", fcol = "green")
+lines(full.arima.mod.pred$mean, lwd = 2, col = "pink")
+lines(full.hwin.mod.pred$mean, lwd = 2, col = "blue")
+legend("topleft", legend = c("Future Prediction with linear regression\nwith polynomial trend with season", "Future Prediction with linear regression with ARIMA", "Future Prediction with linear regression Holt-Winter", "current"), col = c("green", "pink", "blue", "black"), lty = 1, cex = 0.8)
+```
+
+```
